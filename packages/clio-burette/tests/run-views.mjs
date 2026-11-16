@@ -3,11 +3,12 @@
 // Usage: node packages/clio-burette/tests/run-views.mjs <out-dir> [scenario...]
 //        (BURETTE_SERVER="cmd arg..." to start another server command)
 import { execSync } from "node:child_process";
-import { mkdirSync, writeFileSync, readFileSync, utimesSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startHarness } from "./harness/harness-server.mjs";
+import { measure, readStructure } from "../server/geometry.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixtures = path.join(here, "fixtures");
@@ -173,6 +174,104 @@ const scenarios = {
     const after = await torsion();
     const afterShot = await shot(p, "08-reload-after");
     return { before: before.dihedral_H13_C6_C0_C1, after: after.dihedral_H13_C6_C0_C1, beforeShot, afterShot };
+  },
+  async edit() {
+    const { copyFileSync, readdirSync } = await import("node:fs");
+    const work = path.join(outDir, "work", "edit");
+    mkdirSync(work, { recursive: true });
+    for (const name of readdirSync(work)) rmSync(path.join(work, name));
+    const glycol = path.join(work, "ethylene-glycol.xyz");
+    copyFileSync(path.join(fixtures, "ethylene-glycol.xyz"), glycol);
+    const dihedralOf = (file) => {
+      const atoms = readStructure(readFileSync(file, "utf8"), "xyz", 0).atoms.map((a) => a.xyz);
+      return Math.round(measure.dihedral(atoms, [0, 1, 2, 3]) * 10) / 10;
+    };
+    const out = { source: { path: glycol, dihedral: dihedralOf(glycol) } };
+    const p = await page();
+    await p.evaluate((f) => window.harness.open("open_structure", { path: f }), glycol);
+    const frame = await waitStatus(p, /frame/);
+    await p.waitForTimeout(1200);
+    const frameBox = await p.locator("iframe").boundingBox();
+    const clickAtom = async (index) => {
+      const at = await frame.evaluate((i) => window.__buretteViewer.screenOf(i), index);
+      await p.mouse.click(frameBox.x + 1 + at.x, frameBox.y + 1 + at.y);
+      await p.waitForTimeout(350);
+    };
+    // An asymmetric molecule checks the region projection: a small box around O3 holds O3.
+    const o3 = await frame.evaluate(() => window.__buretteViewer.screenOf(3));
+    const view = await frame.evaluate(() => ({ w: document.documentElement.clientWidth, h: document.documentElement.clientHeight }));
+    const around = await p.evaluate((rect) => window.harness.callAppTool("describe_region", { rect }), {
+      x: (o3.x - 15) / view.w, y: (o3.y - 15) / view.h, width: 30 / view.w, height: 30 / view.h,
+    });
+    out.regionAroundO3 = around.structuredContent.region.indices;
+    await clickAtom(3); // clear the region's selection
+    await frame.evaluate(() => window.__buretteViewer.clearSelection());
+    await frame.locator("#edit").click();
+    for (const index of [0, 1, 2, 3]) await clickAtom(index);
+    await p.waitForTimeout(400);
+    out.panelBefore = await frame.locator("#edit-info").textContent();
+    out.shots = [await shot(p, "17-glycol-edit-anti")];
+    // Typed value: O-C-C-O to gauche.
+    await frame.locator("#edit-value").fill("60");
+    await frame.locator("#edit-value").press("Enter");
+    await waitStatus(p, /wrote/, 20000);
+    await p.waitForTimeout(1000);
+    const typed = await p.evaluate(() => window.harness.lastContext()?.structuredContent?.edit);
+    out.typed = { edit: typed, fileDihedral: dihedralOf(typed.edited_path), panel: await frame.locator("#edit-info").textContent() };
+    out.shots.push(await shot(p, "18-glycol-edit-gauche-typed"));
+    // Dragged handle: drag the slider thumb to about -60 degrees.
+    const slider = await frame.locator("#edit-slider").boundingBox();
+    const xOf = (v) => slider.x + 8 + ((v + 180) / 360) * (slider.width - 16);
+    await p.mouse.move(xOf(60), slider.y + slider.height / 2);
+    await p.mouse.down();
+    await p.mouse.move(xOf(-60), slider.y + slider.height / 2, { steps: 12 });
+    await p.mouse.up();
+    await waitStatus(p, /→ -/, 20000);
+    await p.waitForTimeout(1000);
+    const dragged = await p.evaluate(() => window.harness.lastContext()?.structuredContent?.edit);
+    out.dragged = { edit: dragged, fileDihedral: dihedralOf(dragged.edited_path) };
+    out.shots.push(await shot(p, "19-glycol-edit-slider"));
+    // Drag one atom (hydroxyl H4) in the view plane.
+    for (const index of [0, 1, 2, 3]) await clickAtom(index); // deselect the four
+    await clickAtom(4);
+    await frame.locator("#edit-move").click();
+    const h = await frame.evaluate(() => window.__buretteViewer.screenOf(4));
+    await p.mouse.move(frameBox.x + 1 + h.x, frameBox.y + 1 + h.y);
+    await p.mouse.down();
+    await p.mouse.move(frameBox.x + 1 + h.x + 60, frameBox.y + 1 + h.y - 30, { steps: 8 });
+    await p.mouse.up();
+    await waitStatus(p, /Moved/, 20000);
+    await p.waitForTimeout(800);
+    out.moved = await p.evaluate(() => window.harness.lastContext()?.structuredContent?.edit);
+    out.shots.push(await shot(p, "20-glycol-drag-atom"));
+    out.context = await p.evaluate(() => window.harness.lastContext()?.content?.[0]?.text);
+    // The same edit through the server tool, as the agent would call it.
+    const tool = await harness.client.callTool({ name: "set_geometry", arguments: { path: glycol, kind: "dihedral", atoms: [0, 1, 2, 3], value: 60 } });
+    out.tool = { text: tool.content[0].text, edit: tool.structuredContent.edit, fileDihedral: dihedralOf(tool.structuredContent.edit.edited_path) };
+    const notBonded = await harness.client.callTool({ name: "set_geometry", arguments: { path: glycol, kind: "distance", atoms: [0, 3], value: 2 } });
+    out.notBonded = notBonded.content[0].text;
+    out.sourceAfter = dihedralOf(glycol);
+    out.files = readdirSync(work).sort();
+    // Ring bond refused in the view: p-xylene ring atoms 5-0-1-2.
+    const xylene = path.join(work, "p-xylene.xyz");
+    copyFileSync(path.join(fixtures, "p-xylene.xyz"), xylene);
+    const q = await page();
+    await q.evaluate((f) => window.harness.open("open_structure", { path: f }), xylene);
+    const qframe = await waitStatus(q, /frame/);
+    await q.waitForTimeout(1200);
+    const qBox = await q.locator("iframe").boundingBox();
+    await qframe.locator("#edit").click();
+    for (const index of [5, 0, 1, 2]) {
+      const at = await qframe.evaluate((i) => window.__buretteViewer.screenOf(i), index);
+      await q.mouse.click(qBox.x + 1 + at.x, qBox.y + 1 + at.y);
+      await q.waitForTimeout(350);
+    }
+    await qframe.locator("#edit-value").fill("30");
+    await qframe.locator("#edit-value").press("Enter");
+    await waitStatus(q, /ring/, 20000);
+    out.ring = await qframe.locator("#status").textContent();
+    out.shots.push(await shot(q, "21-ring-bond-refused"));
+    return out;
   },
   async magnetite() {
     const out = {};
