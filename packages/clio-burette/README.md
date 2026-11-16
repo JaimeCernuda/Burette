@@ -32,6 +32,8 @@ Model-facing:
 | `open_structure` | viewer | Opens a workspace file by path: PDB, PDBQT poses, mmCIF, CIF with unit cell, SDF/MOL, XYZ (multi-frame = trajectory), GRO, MOL2. Optional `frame`, `focus`, `supercell`. |
 | `play_mode` | viewer | Plays a normal mode or short trajectory written as a multi-frame XYZ, looping (`path` or `mode`, `fps`, `loop`). |
 | `open_pdb_entry` | viewer | Fetches one RCSB entry by ID and opens it. |
+| `set_geometry` | viewer | Sets a bond length (2 atoms), angle (3) or dihedral (4 bonded atoms) in an XYZ, PDB/PDBQT or SDF/MOL file, writes a new file next to the source and opens it. |
+| `move_atom` | viewer | Moves one atom to a position or by a displacement (Å), writes a new file next to the source and opens it. |
 | `summarize_structure` | no | Atoms, residues, chains, ligands, waters, ions, elements and models of a file. |
 | `edit_fragment` | no | Writes a new PDB with a fragment extracted, removed or replaced (topology, not geometry). |
 | `open_ketcher` | Ketcher | Opens the 2D editor seeded with SMILES, a MOL block or a .mol/.sdf/.smi file. |
@@ -82,6 +84,26 @@ special positions (magnetite: 576 images and 13,412 duplicate bonds for a 56-ato
 cell). Atom indices of a packed crystal count the packed cell, and each atom
 carries its CIF site label as `site`.
 
+## Geometry edits
+
+Mol* has no geometry editor, so the edit itself happens in this server
+(`server/geometry.mjs`) and the viewer only picks atoms and shows the result.
+
+- In the viewer, **Edit** opens a bar under the header. The person clicks 2, 3 or 4
+  bonded atoms in order (bond, angle, dihedral), sees the current value, and sets a
+  new one by dragging the slider or typing it. With one atom picked, **Drag atom**
+  moves it in the screen plane (it keeps its depth).
+- Bonds are covalent radii × 1.15, the convention of the ase server's
+  `set_geometry`. The bond being changed is cut; the smaller fragment on the moving
+  side turns or shifts rigidly. A bond in a ring and a pair that is not bonded are
+  refused with a plain message.
+- Every edit writes a NEW file next to the source, `name.editN.ext` (never
+  overwriting), and the view opens it with the same camera and selection. For a
+  multi-frame XYZ only the edited frame is written; a PDB keeps every other record.
+  Crystals (CIF) are not edited.
+- The agent does the same edit with `set_geometry` and `move_atom`; their results
+  carry the same `edit` record.
+
 ## Messages from the views (`ui/update-model-context`)
 
 Viewer, sent on selection, region, focus, frame change and file load (at most
@@ -94,6 +116,7 @@ every 150 ms; about once a second while playing):
     "burette": "viewer/v1",
     "path": "/w/p-xylene.xyz", "label": "p-xylene.xyz", "format": "xyz",
     "frame": 0, "frame_count": 1, "playing": false, "mode": null, "focus": null,
+    "edit": null,
     "selection": {
       "path": "/w/p-xylene.xyz", "frame": 0, "count": 7, "truncated": false,
       "indices": [3, 8, 9, 10, 15, 16, 17],
@@ -108,6 +131,11 @@ every 150 ms; about once a second while playing):
   }
 }
 ```
+
+After a geometry edit, `edit` is
+`{source_path, edited_path, kind: "distance"|"angle"|"dihedral"|"move_atom", atoms, frame, before, after, moved_atoms, note}`
+(`before`/`after` are Å or degrees, or the atom's coordinates for `move_atom`), and
+`path` is the edited file, so the agent knows which structure to re-optimize from.
 
 `index` is the 0-based position of the atom in the file (Mol*'s source index).
 Atoms with residues also carry `name`, `residue`, `seq` and `chain`; atoms of a
@@ -154,7 +182,8 @@ loads a view resource, sends tool input and results, relays the view's
 view's app tools, and proxies the loopback service with its token as CLIO does.
 The fixtures (`tests/fixtures/`) are synthetic: `make_fixtures.py` writes
 p-xylene and a 20-frame mode; `make_magnetite.py` (ASE) writes magnetite and a
-Fe3O4(001) slab with water.
+Fe3O4(001) slab with water; `make_glycol.py` (RDKit) writes ethylene glycol with
+O-C-C-O anti, for the geometry edit checks.
 
 ## Licenses
 
