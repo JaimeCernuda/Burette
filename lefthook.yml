@@ -6,7 +6,11 @@ pre-commit:
     rust-fmt:
       run: bun run check:rust:fmt
     plist:
-      run: plutil -lint apps/desktop/src-tauri/AppMetadata.plist apps/desktop/src-tauri/Info.plist PreviewExtension/Info.plist PreviewExtension/BurettePreview.entitlements
+      # plutil ships only with macOS; elsewhere say so instead of failing every commit.
+      run: >-
+        if ! command -v plutil >/dev/null 2>&1; then
+        echo "plist lint skipped: plutil is macOS-only and not on PATH"; exit 0; fi;
+        plutil -lint apps/desktop/src-tauri/AppMetadata.plist apps/desktop/src-tauri/Info.plist PreviewExtension/Info.plist PreviewExtension/BurettePreview.entitlements
 
 pre-push:
   commands:
