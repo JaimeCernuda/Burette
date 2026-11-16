@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clio-burette"
+version = "0.1.0"
+description = "Burette's Mol* viewer and Ketcher editor as one stdio MCP server (MCP Apps views plus workspace tools) for CLIO."
+readme = "README.md"
+license = "MIT"
+license-files = ["src/clio_burette/bundle/LICENSE", "src/clio_burette/bundle/THIRD_PARTY_NOTICES.md", "src/clio_burette/bundle/LICENSE-ketcher-indigo-apache-2.0.txt"]
+requires-python = ">=3.10"
+dependencies = ["nodejs-wheel-binaries==24.19.0"]
+
+[project.scripts]
+burette-clio = "clio_burette.launcher:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/clio_burette"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/clio_burette", "README.md", "pyproject.toml"]
