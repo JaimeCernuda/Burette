@@ -19,6 +19,7 @@ import { summarizeStructureFile } from "../../../plugins/burette-agent/mcp/lib/s
 import {
   countXyzFrames, INLINE_BYTES, lookup, readChunk, readWhole, registerFile, registerText, statHandle, ToolInputError,
 } from "./files.mjs";
+import { editFile } from "./geometry.mjs";
 import { startService } from "./service.mjs";
 
 export const VIEWER_URI = "ui://burette/molecular-viewer-v21.html";
@@ -58,8 +59,9 @@ const server = new McpServer(
       "open_structure opens PDB, mmCIF, CIF (unit cell), SDF/MOL, XYZ (multi-frame trajectories) and PDBQT poses by path.",
       "play_mode plays a normal mode or trajectory given as a multi-frame XYZ file. The open view also offers app tools",
       "(set_frame, play_mode, focus, describe_region, get_view_state). The person's atom selection reaches you as the view's",
-      "context: 0-based atom indices in file order, elements, residues and coordinates. Mol* does not edit geometry: change",
-      "coordinates with a geometry tool, write the file, and the open view reloads it. open_ketcher opens a 2D editor;",
+      "context: 0-based atom indices in file order, elements, residues and coordinates. The person can set a bond, angle or",
+      "dihedral or drag an atom in the viewer's Edit mode; set_geometry and move_atom do the same. Every edit writes a new",
+      "file next to the source and the view's context names it (edit.edited_path). open_ketcher opens a 2D editor;",
       "get_ketcher_structure returns the person's edited molecule and save_ketcher_structure writes it to a file.",
     ].join(" "),
   },
@@ -123,7 +125,7 @@ function focusSchema() {
   }).optional();
 }
 
-async function openStructureResult(entry, { frame, focus, play, fps, loop, supercell, label }) {
+async function openStructureResult(entry, { frame, focus, play, fps, loop, supercell, label, keepCamera }) {
   const { summary, inline, frames } = await describe(entry);
   const shown = label || entry.label;
   const lines = [
@@ -163,6 +165,7 @@ async function openStructureResult(entry, { frame, focus, play, fps, loop, super
         ...(focus ? { focus } : {}),
         ...(play ? { play: true, fps: fps ?? 10, loop: loop !== false } : {}),
         ...(supercell ? { supercell } : {}),
+        ...(keepCamera ? { keepCamera: true } : {}),
         ...(entry.packed ? { packedCell: entry.packed } : {}),
       },
     },
@@ -250,6 +253,59 @@ registerAppTool(server, "play_mode", {
   result.structuredContent.mode = entry.path;
   return result;
 }));
+
+async function geometryResult(input, edit) {
+  const source = await registerFile(input.path);
+  if (!source.path) throw new ToolInputError("no_file", "Geometry edits need a workspace file.");
+  const record = await editFile(source.path, source.format, edit);
+  const entry = await registerFile(record.edited_path);
+  const result = await openStructureResult(entry, { keepCamera: true });
+  const unitOf = { distance: " Å", angle: "°", dihedral: "°" }[record.kind] ?? "";
+  const what = record.kind === "move_atom"
+    ? `moved atom ${record.atoms[0]} from (${record.before.join(", ")}) to (${record.after.join(", ")}) Å`
+    : `set the ${record.kind} of atoms ${record.atoms.join("-")} from ${record.before}${unitOf} to ${record.after}${unitOf}`;
+  result.content = text(`Burette ${what} and wrote ${record.edited_path} (the source ${record.source_path} is unchanged). ${record.note} Moved atoms: ${record.moved_atoms.join(", ")}.`);
+  result.structuredContent.edit = record;
+  result._meta[STRUCTURE_META].edit = record;
+  return result;
+}
+
+const editAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+
+registerAppTool(server, "set_geometry", {
+  title: "Set geometry",
+  description:
+    "Set a bond length (2 atoms), angle (3) or dihedral (4 bonded atoms, 0-based file indices) in an XYZ, PDB/PDBQT or "
+    + "SDF/MOL file. The smaller fragment on the moving side turns or shifts rigidly; ring bonds and non-bonded pairs "
+    + "are refused (bonds: covalent radii x 1.15). Writes a NEW file next to the source (name.editN.ext) and opens it.",
+  inputSchema: {
+    path: z.string().min(1),
+    kind: z.enum(["distance", "angle", "dihedral"]),
+    atoms: z.array(z.number().int().min(0)).min(2).max(4),
+    value: z.number().describe("Å for a distance, degrees for an angle or dihedral."),
+    frame: z.number().int().min(0).optional().describe("Frame or model to edit (default 0); only that frame is written."),
+  },
+  annotations: editAnnotations,
+  _meta: { ui: { resourceUri: VIEWER_URI }, [PATHS_KEY]: { path: local("read") }, [STATE_KEY]: VIEWER_STATE },
+}, guarded(async (input) => geometryResult(input, { kind: input.kind, atoms: input.atoms, value: input.value, frame: input.frame })));
+
+registerAppTool(server, "move_atom", {
+  title: "Move atom",
+  description:
+    "Move one atom (0-based file index) to a position or by a displacement in Å, in an XYZ, PDB/PDBQT or SDF/MOL file. "
+    + "Writes a NEW file next to the source (name.editN.ext) and opens it.",
+  inputSchema: {
+    path: z.string().min(1),
+    atom: z.number().int().min(0),
+    position: z.array(z.number()).length(3).optional(),
+    displacement: z.array(z.number()).length(3).optional(),
+    frame: z.number().int().min(0).optional(),
+  },
+  annotations: editAnnotations,
+  _meta: { ui: { resourceUri: VIEWER_URI }, [PATHS_KEY]: { path: local("read") }, [STATE_KEY]: VIEWER_STATE },
+}, guarded(async (input) => geometryResult(input, {
+  kind: "move_atom", atoms: [input.atom], position: input.position, displacement: input.displacement, frame: input.frame,
+})));
 
 registerAppTool(server, "open_pdb_entry", {
   title: "Open PDB entry",
