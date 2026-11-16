@@ -20,9 +20,16 @@
   #frames[hidden] { display: none; }
   #frame { width: 140px; }
   #frame-label { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 56px; }
-  #stage { position: relative; flex: 1; min-height: 0; }
+  #stage-wrap { position: relative; flex: 1; min-height: 0; }
+  #stage { position: absolute; inset: 0; }
   #overlay { position: fixed; inset: 0; cursor: crosshair; z-index: 50; background: rgba(0, 113, 227, 0.04); }
   #overlay[hidden], #box[hidden] { display: none; }
+  #overlay[data-mode="move"] { cursor: move; background: rgba(0, 113, 227, 0.02); }
+  #edit-panel { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--bg); }
+  #edit-panel[hidden], #edit-panel [hidden] { display: none; }
+  #edit-info { flex: 1 1 220px; font-variant-numeric: tabular-nums; }
+  #edit-slider { flex: 1 1 160px; }
+  #edit-value { width: 80px; font: inherit; color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
   #box { position: fixed; border: 1.5px solid var(--accent); background: rgba(0, 113, 227, 0.12); z-index: 51; pointer-events: none; }
   .msp-plugin { font-size: 12px; }
 </style>
@@ -37,10 +44,20 @@
       <input id="frame" type="range" min="0" max="0" value="0" aria-label="Frame" />
       <span id="frame-label">1 / 1</span>
     </span>
+    <button id="edit" type="button" aria-pressed="false" title="Change a bond, angle or dihedral, or drag an atom">Edit</button>
     <button id="region" type="button" aria-pressed="false" title="Draw a rectangle to select the atoms under it">Region</button>
     <button id="reset" type="button" title="Reset camera">Reset</button>
   </header>
-  <div id="stage"></div>
+  <div id="edit-panel" hidden>
+    <span id="edit-info"></span>
+    <input id="edit-slider" type="range" aria-label="New value" hidden />
+    <input id="edit-value" type="number" step="any" aria-label="New value" hidden />
+    <button id="edit-apply" type="button" hidden>Apply</button>
+    <button id="edit-move" type="button" aria-pressed="false" hidden>Drag atom</button>
+  </div>
+  <div id="stage-wrap">
+    <div id="stage"></div>
+  </div>
 </div>
 <div id="overlay" hidden></div>
 <div id="box" hidden></div>

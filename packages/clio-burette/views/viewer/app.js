@@ -6,6 +6,8 @@
 import { App } from "@modelcontextprotocol/ext-apps";
 import { z } from "zod";
 
+import { installEditMode } from "./edit.js";
+
 const SERVICE_KEY = "ai.iowarp.clio/service";
 const STRUCTURE_META = "burette/structure";
 const MAX_REPORTED_ATOMS = 256;
@@ -24,6 +26,13 @@ const ui = {
   overlay: document.getElementById("overlay"),
   box: document.getElementById("box"),
   frames: document.getElementById("frames"),
+  edit: document.getElementById("edit"),
+  editPanel: document.getElementById("edit-panel"),
+  editInfo: document.getElementById("edit-info"),
+  editValue: document.getElementById("edit-value"),
+  editSlider: document.getElementById("edit-slider"),
+  editApply: document.getElementById("edit-apply"),
+  editMove: document.getElementById("edit-move"),
 };
 
 const state = {
@@ -37,6 +46,7 @@ const state = {
   focus: null,
   selection: null,
   region: null,
+  edit: null, // the last geometry edit: {source_path, edited_path, kind, atoms, before, after, …}
 };
 
 let viewer = null;
@@ -46,6 +56,7 @@ let loadSequence = 0;
 let playToken = 0;
 let contextTimer = null;
 let suppressSelection = false;
+let editMode = null;
 
 const app = new App(
   { name: "burette-molecular-viewer", version: "0.1.0" },
@@ -354,7 +365,8 @@ function atomsInRect(rect, relativeTo = "view") {
       Vec3.set(point, P.atom.x(location), P.atom.y(location), P.atom.z(location));
       camera.project(out, point);
       const fx = (out[0] - viewport.x) / viewport.width;
-      const fy = 1 - (out[1] - viewport.y) / viewport.height;
+      // Mol*'s project() returns window coordinates: y grows downwards.
+      const fy = (out[1] - viewport.y) / viewport.height;
       if (fx >= r.x && fx <= r.x + r.width && fy >= r.y && fy <= r.y + r.height) {
         keys.add(`${unit.id}:${location.element}`);
       }
@@ -392,6 +404,7 @@ function wireRegionDrawing() {
     ui.overlay.hidden = !active;
   });
   ui.overlay.addEventListener("pointerdown", (event) => {
+    if (ui.overlay.dataset.mode === "move") return;
     start = { x: event.clientX, y: event.clientY };
     ui.overlay.setPointerCapture(event.pointerId);
     Object.assign(ui.box.style, { left: `${start.x}px`, top: `${start.y}px`, width: "0px", height: "0px" });
@@ -405,7 +418,7 @@ function wireRegionDrawing() {
     });
   });
   ui.overlay.addEventListener("pointerup", (event) => {
-    if (!start) return;
+    if (!start || ui.overlay.dataset.mode === "move") return;
     const width = document.documentElement.clientWidth;
     const height = document.documentElement.clientHeight;
     const rect = {
@@ -428,6 +441,25 @@ function wireRegionDrawing() {
   });
 }
 
+/** Where atom `index` (0-based file order) projects in the viewport, with its depth. */
+function projectAtom(index) {
+  const { StructureElement, StructureProperties: P } = lib().structure;
+  const { Vec3 } = lib().math.LinearAlgebra;
+  const structure = currentStructure();
+  const camera = viewer.plugin.canvas3d.camera;
+  for (const unit of structure.units) {
+    const location = StructureElement.Location.create(structure, unit, unit.elements[0]);
+    for (let i = 0; i < unit.elements.length; i += 1) {
+      location.element = unit.elements[i];
+      if (P.atom.sourceIndex(location) !== index) continue;
+      const out = Vec3();
+      camera.project(out, Vec3.create(P.atom.x(location), P.atom.y(location), P.atom.z(location)));
+      return { x: out[0], y: out[1], z: out[2], viewport: camera.viewport, rect: ui.stage.querySelector("canvas").getBoundingClientRect() };
+    }
+  }
+  throw new Error(`Atom ${index} is not in the view.`);
+}
+
 // ---- Model context ----------------------------------------------------------------------
 
 function viewState() {
@@ -443,6 +475,7 @@ function viewState() {
     focus: state.focus,
     selection: state.selection,
     region: state.region,
+    edit: state.edit,
   };
 }
 
@@ -457,6 +490,12 @@ function contextText(view) {
     lines.push("No atoms are selected.");
   }
   if (view.focus) lines.push(`Focused on ${JSON.stringify(view.focus)}.`);
+  const edit = view.edit;
+  if (edit) {
+    lines.push(edit.kind === "move_atom"
+      ? `The person moved atom ${edit.atoms[0]} from (${edit.before.join(", ")}) to (${edit.after.join(", ")}) Å; the edited structure is ${edit.edited_path} (source ${edit.source_path} unchanged).`
+      : `The person set the ${edit.kind} of atoms ${edit.atoms.join("-")} from ${edit.before} to ${edit.after}; the edited structure is ${edit.edited_path} (source ${edit.source_path} unchanged).`);
+  }
   return lines.join(" ");
 }
 
@@ -472,6 +511,7 @@ function scheduleContext() {
 function onSelectionChanged() {
   state.selection = summarizeLoci(selectionLoci());
   if (state.selection) setStatus(`${state.selection.count} atom${state.selection.count === 1 ? "" : "s"} selected`);
+  editMode?.onSelection(state.selection);
   scheduleContext();
 }
 
@@ -490,8 +530,9 @@ async function openStructure(descriptor) {
   ui.title.textContent = structure.label ?? structure.path ?? "Structure";
   const text = descriptor.data ?? await fetchStructureText(structure);
   if (sequence !== loadSequence) return;
-  await loadText(structure, text, { keepCamera: false });
+  await loadText(structure, text, { keepCamera: descriptor.keepCamera === true });
   if (sequence !== loadSequence) return;
+  state.edit = descriptor.edit ?? null;
   state.mode = descriptor.play ? structure.path ?? structure.label : null;
   state.focus = null;
   state.region = null;
@@ -721,6 +762,28 @@ ui.play.addEventListener("click", () => {
 ui.reset.addEventListener("click", () => viewer?.plugin.managers.camera.reset());
 wireRegionDrawing();
 registerAppTools();
+editMode = installEditMode({
+  app,
+  state,
+  ui,
+  setStatus,
+  scheduleContext,
+  openStructure,
+  async selectAtoms(indices) {
+    if (!indices.length) return;
+    const loci = lociFor({ atoms: indices });
+    selectLoci(loci);
+    state.selection = summarizeLoci([loci]);
+    scheduleContext();
+  },
+  projectAtom,
+  unproject([x, y, z]) {
+    const { Vec3 } = lib().math.LinearAlgebra;
+    const out = Vec3();
+    viewer.plugin.canvas3d.camera.unproject(out, Vec3.create(x, y, z));
+    return [out[0], out[1], out[2]].map((v) => Math.round(v * 10000) / 10000);
+  },
+});
 
 async function main() {
   setStatus("Connecting…");
@@ -741,6 +804,15 @@ async function main() {
 
 window.__buretteViewer = {
   state, viewState, describeRegion,
+  clearSelection: () => viewer.plugin.managers.interactivity.lociSelects.deselectAll(),
+  // Client (CSS) coordinates of an atom, for the harness to click it like a person.
+  screenOf: (index) => {
+    const p = projectAtom(index);
+    return {
+      x: p.rect.left + ((p.x - p.viewport.x) / p.viewport.width) * p.rect.width,
+      y: p.rect.top + ((p.y - p.viewport.y) / p.viewport.height) * p.rect.height,
+    };
+  },
   stats: () => {
     const structure = currentStructure();
     if (!structure) return null;
