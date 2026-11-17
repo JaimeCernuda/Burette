@@ -1,0 +1,1 @@
+var e=class{constructor(){throw Error(`The Miew 3D preview is not part of the Burette CLIO Ketcher view; use the Mol* viewer.`)}};export{e as Miew,e as default};

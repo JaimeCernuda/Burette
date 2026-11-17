@@ -1,0 +1,13 @@
+@import "../../../../apps/desktop/src/styles.css";
+@import "../../../../apps/desktop/src/styles/codex-tokens.css";
+@import "../../../../apps/desktop/src/styles/interface-tokens.css";
+@source "../../../../apps/desktop/src/components/ketcher-editor.tsx";
+@source "../../../../apps/desktop/src/components/ketcher";
+@source "../../../../apps/desktop/src/components/ui";
+
+/* The desktop page sits under the window chrome inside the app shell; in the
+   view it fills the frame below the status line. */
+.app-shell.burette-clio-ketcher { position: absolute; inset: 0; background: var(--surface-primary, #ffffff); }
+.burette-clio-ketcher .ketcher-page { position: absolute; inset: 0; display: block; }
+.burette-clio-ketcher .ketcher-page-body { height: 100%; padding: 0; display: block; }
+.burette-clio-ketcher .ketcher-editor-shell { height: 100%; border: 0; }
