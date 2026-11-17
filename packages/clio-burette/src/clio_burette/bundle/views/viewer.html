@@ -32,6 +32,14 @@
   #edit-value { width: 80px; font: inherit; color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
   #box { position: fixed; border: 1.5px solid var(--accent); background: rgba(0, 113, 227, 0.12); z-index: 51; pointer-events: none; }
   .msp-plugin { font-size: 12px; }
+  /* Narrow views (a phone): Mol*'s centred selection toolbar runs under the viewport
+     controls column on the right; keep it clear of that column and let it scroll. */
+  @media (max-width: 560px) {
+    .msp-selection-viewport-controls {
+      left: 4px !important; right: 44px !important; transform: none !important;
+      max-width: none !important; overflow-x: auto; white-space: nowrap;
+    }
+  }
 </style>
 </head>
 <body>
